@@ -204,7 +204,7 @@ fn adaptive_verification_entries_record_one_policy_decision() {
 
 #[test]
 fn serial_optimized_verification_preserves_parity_and_detects_corruption() {
-    for (data, parity) in [(4, 2), (6, 3), (8, 3), (8, 4), (10, 4), (12, 4)] {
+    for (data, parity) in [(4, 2), (6, 2), (6, 3), (8, 3), (8, 4), (10, 4), (12, 4)] {
         for len in [65, 65_536] {
             let codec = galois_8::ReedSolomon::with_options(
                 data,
