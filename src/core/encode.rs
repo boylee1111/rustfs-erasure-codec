@@ -392,6 +392,68 @@ impl<F: Field> ReedSolomon<F> {
         );
     }
 
+    #[cfg(any(rse_x86_avx2, rse_x86_avx512))]
+    #[inline(never)]
+    fn try_table_rows<T: AsRef<[F::Elem]>, U: AsMut<[F::Elem]>>(
+        kernel: crate::galois_8::x86::table_rows::SelectedTableRowKernel,
+        matrix_rows: &(impl MatrixRows<F::Elem> + ?Sized),
+        inputs: &[T],
+        outputs: &mut [U],
+        shard_len: usize,
+        chunk_len: usize,
+    ) -> bool {
+        let mut rows: SmallVec<[&[u8]; 4]> = SmallVec::new();
+        for index in 0..matrix_rows.len() {
+            let Some(bytes) = F::as_gf8_slice(matrix_rows.row(index)) else {
+                return false;
+            };
+            if bytes.len() != inputs.len() {
+                return false;
+            }
+            rows.push(bytes);
+        }
+        let Ok(mut views) = ByteShardViews::<[&[u8]; 16], [&mut [u8]; 4]>::prepare::<F, _, _>(
+            inputs, outputs, shard_len,
+        ) else {
+            return false;
+        };
+        kernel
+            .execute(&rows, &views.data, &mut views.parity, shard_len, chunk_len)
+            .is_ok()
+    }
+
+    #[cfg(any(rse_x86_avx2, rse_x86_avx512))]
+    fn try_table_outputs<T: AsRef<[F::Elem]>>(
+        kernel: crate::galois_8::x86::table_rows::SelectedTableRowKernel,
+        matrix_rows: &(impl MatrixRows<F::Elem> + ?Sized),
+        inputs: &[T],
+        outputs: &mut impl CodingOutputs<F::Elem>,
+        shard_len: usize,
+        chunk_len: usize,
+    ) -> bool {
+        if let Some(contiguous) = outputs.contiguous() {
+            Self::try_table_rows(
+                kernel,
+                matrix_rows,
+                inputs,
+                contiguous,
+                shard_len,
+                chunk_len,
+            )
+        } else {
+            let mut views: SmallVec<[&mut [F::Elem]; 4]> =
+                outputs.iter_mut().map(|output| output.as_mut()).collect();
+            Self::try_table_rows(
+                kernel,
+                matrix_rows,
+                inputs,
+                &mut views,
+                shard_len,
+                chunk_len,
+            )
+        }
+    }
+
     #[cfg(rse_x86_gfni)]
     fn try_gfni_outputs<T: AsRef<[F::Elem]>>(
         kernel: crate::galois_8::x86::gfni_rows::SelectedRowKernel,
@@ -475,6 +537,34 @@ impl<F: Field> ReedSolomon<F> {
                 let views: SmallVec<[&[F::Elem]; 32]> =
                     inputs.iter().map(|input| input.as_ref()).collect();
                 Self::try_gfni_outputs(kernel, matrix_rows, &views, outputs, shard_len, chunk_len)
+            };
+            if executed {
+                return;
+            }
+        }
+        #[cfg(any(rse_x86_avx2, rse_x86_avx512))]
+        if inputs.len() == self.data_shard_count()
+            && matrix_rows.len() == outputs.len()
+            && F::ORDER == 256
+            && let Some(kernel) = crate::galois_8::x86::table_rows::SelectedTableRowKernel::select(
+                inputs.len(),
+                outputs.len(),
+                shard_len,
+            )
+        {
+            let executed = if let Some(contiguous) = inputs.contiguous() {
+                Self::try_table_outputs(
+                    kernel,
+                    matrix_rows,
+                    contiguous,
+                    outputs,
+                    shard_len,
+                    chunk_len,
+                )
+            } else {
+                let views: SmallVec<[&[F::Elem]; 16]> =
+                    inputs.iter().map(|input| input.as_ref()).collect();
+                Self::try_table_outputs(kernel, matrix_rows, &views, outputs, shard_len, chunk_len)
             };
             if executed {
                 return;

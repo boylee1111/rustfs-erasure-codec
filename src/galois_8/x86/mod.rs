@@ -1,5 +1,7 @@
 #[cfg(rse_x86_gfni)]
 pub(crate) mod gfni_rows;
+#[cfg(any(rse_x86_avx2, rse_x86_avx512))]
+pub(crate) mod table_rows;
 
 #[cfg(all(
     feature = "simd-avx2",
